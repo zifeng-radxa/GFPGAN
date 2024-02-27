@@ -3,13 +3,13 @@ import os
 import torch
 from basicsr.utils import img2tensor, tensor2img
 from basicsr.utils.download_util import load_file_from_url
-from facexlib.utils.face_restoration_helper import FaceRestoreHelper
+from FACEXLIB.facexlib.utils.face_restoration_helper import FaceRestoreHelper
 from torchvision.transforms.functional import normalize
 
-from gfpgan.archs.gfpgan_bilinear_arch import GFPGANBilinear
-from gfpgan.archs.gfpganv1_arch import GFPGANv1
-from gfpgan.archs.gfpganv1_clean_arch import GFPGANv1Clean
-
+from GFPGAN.gfpgan.archs.gfpgan_bilinear_arch import GFPGANBilinear
+from GFPGAN.gfpgan.archs.gfpganv1_arch import GFPGANv1
+from GFPGAN.gfpgan.archs.gfpganv1_clean_arch import GFPGANv1Clean
+import numpy as np
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -29,7 +29,7 @@ class GFPGANer():
         bg_upsampler (nn.Module): The upsampler for the background. Default: None.
     """
 
-    def __init__(self, model_path, upscale=2, arch='clean', channel_multiplier=2, bg_upsampler=None, device=None):
+    def __init__(self, model_path, upscale=2, arch='clean', channel_multiplier=2, bg_upsampler=None, device=None, face_bmodel=None, pars_bmodel=None):
         self.upscale = upscale
         self.bg_upsampler = bg_upsampler
 
@@ -84,7 +84,10 @@ class GFPGANer():
             save_ext='png',
             use_parse=True,
             device=self.device,
-            model_rootpath='gfpgan/weights')
+            model_rootpath='gfpgan/weights',
+            face_bmodel = face_bmodel,
+            pars_bmodel = pars_bmodel
+        )
 
         if model_path.startswith('https://'):
             model_path = load_file_from_url(
@@ -99,7 +102,8 @@ class GFPGANer():
         self.gfpgan = self.gfpgan.to(self.device)
 
     @torch.no_grad()
-    def enhance(self, img, has_aligned=False, only_center_face=False, paste_back=True, weight=0.5):
+    def enhance(self, img, has_aligned=False, only_center_face=False, paste_back=True, weight=0.5, tqdm_tool=None):
+        print("success enter enhance")
         self.face_helper.clean_all()
 
         if has_aligned:  # the inputs are already aligned
@@ -113,6 +117,8 @@ class GFPGANer():
             # TODO: even with eye_dist_threshold, it will still introduce wrong detections and restorations.
             # align and warp each face
             self.face_helper.align_warp_face()
+
+        tqdm_tool.update(1)
 
         # face restoration
         for cropped_face in self.face_helper.cropped_faces:
@@ -132,17 +138,30 @@ class GFPGANer():
             restored_face = restored_face.astype('uint8')
             self.face_helper.add_restored_face(restored_face)
 
+        tqdm_tool.update(1)
         if not has_aligned and paste_back:
             # upsample the background
             if self.bg_upsampler is not None:
+                img = img.astype(np.float32)
+                frame_chw = np.transpose(img[:, :, [2, 1, 0]], (2, 0, 1))
+                frame_chw = frame_chw / 255.0
+
                 # Now only support RealESRGAN for upsampling background
-                bg_img = self.bg_upsampler.enhance(img, outscale=self.upscale)[0]
+                res = self.bg_upsampler([np.expand_dims(frame_chw, axis=0)])[0]
+                # res = model([np.array([i["data"]])])[0]
+                # 将图像从 chw 转换回 hwc, rgb->brg
+                frame_hwc = np.transpose(res[:, [2, 1, 0], :, :], (0, 2, 3, 1))[0] * 255.0
+                # 数据类型转回 uint8（为了写入到视频中）
+                frame_hwc = np.clip(frame_hwc, 0, 255).astype(np.uint8)
+                bg_img = frame_hwc
+
             else:
                 bg_img = None
 
             self.face_helper.get_inverse_affine(None)
             # paste each restored face to the input image
             restored_img = self.face_helper.paste_faces_to_input_image(upsample_img=bg_img)
+
             return self.face_helper.cropped_faces, self.face_helper.restored_faces, restored_img
         else:
             return self.face_helper.cropped_faces, self.face_helper.restored_faces, None
