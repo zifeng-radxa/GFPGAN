@@ -6,10 +6,11 @@ from basicsr.utils.download_util import load_file_from_url
 from FACEXLIB.facexlib.utils.face_restoration_helper import FaceRestoreHelper
 from torchvision.transforms.functional import normalize
 
-from GFPGAN.gfpgan.archs.gfpgan_bilinear_arch import GFPGANBilinear
-from GFPGAN.gfpgan.archs.gfpganv1_arch import GFPGANv1
+# from GFPGAN.gfpgan.archs.gfpgan_bilinear_arch import GFPGANBilinear
+# from GFPGAN.gfpgan.archs.gfpganv1_arch import GFPGANv1
 from GFPGAN.gfpgan.archs.gfpganv1_clean_arch import GFPGANv1Clean
 import numpy as np
+import time
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -103,7 +104,6 @@ class GFPGANer():
 
     @torch.no_grad()
     def enhance(self, img, has_aligned=False, only_center_face=False, paste_back=True, weight=0.5, tqdm_tool=None):
-        print("success enter enhance")
         self.face_helper.clean_all()
 
         if has_aligned:  # the inputs are already aligned
@@ -112,7 +112,9 @@ class GFPGANer():
         else:
             self.face_helper.read_image(img)
             # get face landmarks for each face
+            time0 = time.time()
             self.face_helper.get_face_landmarks_5(only_center_face=only_center_face, eye_dist_threshold=5)
+            print(time.time() - time0)
             # eye_dist_threshold=5: skip faces whose eye distance is smaller than 5 pixels
             # TODO: even with eye_dist_threshold, it will still introduce wrong detections and restorations.
             # align and warp each face
@@ -128,7 +130,10 @@ class GFPGANer():
             cropped_face_t = cropped_face_t.unsqueeze(0).to(self.device)
 
             try:
+                time0 = time.time()
                 output = self.gfpgan(cropped_face_t, return_rgb=False, weight=weight)[0]
+                print(time.time() - time0)
+
                 # convert to image
                 restored_face = tensor2img(output.squeeze(0), rgb2bgr=True, min_max=(-1, 1))
             except RuntimeError as error:
@@ -139,6 +144,7 @@ class GFPGANer():
             self.face_helper.add_restored_face(restored_face)
 
         tqdm_tool.update(1)
+
         if not has_aligned and paste_back:
             # upsample the background
             if self.bg_upsampler is not None:
@@ -147,7 +153,10 @@ class GFPGANer():
                 frame_chw = frame_chw / 255.0
 
                 # Now only support RealESRGAN for upsampling background
+                time0 = time.time()
                 res = self.bg_upsampler([np.expand_dims(frame_chw, axis=0)])[0]
+                print(time.time() - time0)
+
                 # res = model([np.array([i["data"]])])[0]
                 # 将图像从 chw 转换回 hwc, rgb->brg
                 frame_hwc = np.transpose(res[:, [2, 1, 0], :, :], (0, 2, 3, 1))[0] * 255.0
@@ -160,7 +169,9 @@ class GFPGANer():
 
             self.face_helper.get_inverse_affine(None)
             # paste each restored face to the input image
+            time0 = time.time()
             restored_img = self.face_helper.paste_faces_to_input_image(upsample_img=bg_img)
+            print(time.time() - time0)
 
             return self.face_helper.cropped_faces, self.face_helper.restored_faces, restored_img
         else:
