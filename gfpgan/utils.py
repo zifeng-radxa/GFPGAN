@@ -11,6 +11,7 @@ from torchvision.transforms.functional import normalize
 from GFPGAN.gfpgan.archs.gfpganv1_clean_arch import GFPGANv1Clean
 import numpy as np
 import time
+import onnxruntime
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -30,52 +31,55 @@ class GFPGANer():
         bg_upsampler (nn.Module): The upsampler for the background. Default: None.
     """
 
-    def __init__(self, model_path, upscale=2, arch='clean', channel_multiplier=2, bg_upsampler=None, device=None, face_bmodel=None, pars_bmodel=None):
+    def __init__(self, model_path, upscale=2, arch='clean', channel_multiplier=2, bg_upsampler=None, device=None, face_bmodel=None, pars_bmodel=None, gfgan_bmodel=None):
         self.upscale = upscale
         self.bg_upsampler = bg_upsampler
 
         # initialize model
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') if device is None else device
+        self.device = 'cpu'
         # initialize the GFP-GAN
         if arch == 'clean':
-            self.gfpgan = GFPGANv1Clean(
-                out_size=512,
-                num_style_feat=512,
-                channel_multiplier=channel_multiplier,
-                decoder_load_path=None,
-                fix_decoder=False,
-                num_mlp=8,
-                input_is_latent=True,
-                different_w=True,
-                narrow=1,
-                sft_half=True)
-        elif arch == 'bilinear':
-            self.gfpgan = GFPGANBilinear(
-                out_size=512,
-                num_style_feat=512,
-                channel_multiplier=channel_multiplier,
-                decoder_load_path=None,
-                fix_decoder=False,
-                num_mlp=8,
-                input_is_latent=True,
-                different_w=True,
-                narrow=1,
-                sft_half=True)
-        elif arch == 'original':
-            self.gfpgan = GFPGANv1(
-                out_size=512,
-                num_style_feat=512,
-                channel_multiplier=channel_multiplier,
-                decoder_load_path=None,
-                fix_decoder=True,
-                num_mlp=8,
-                input_is_latent=True,
-                different_w=True,
-                narrow=1,
-                sft_half=True)
-        elif arch == 'RestoreFormer':
-            from gfpgan.archs.restoreformer_arch import RestoreFormer
-            self.gfpgan = RestoreFormer()
+            self.gfpgan = gfgan_bmodel
+            self.ort_session = onnxruntime.InferenceSession('./model/GFPGANv1.3.onnx')
+
+            # self.gfpgan = GFPGANv1Clean(
+            #     out_size=512,
+            #     num_style_feat=512,
+            #     channel_multiplier=channel_multiplier,
+            #     decoder_load_path=None,
+            #     fix_decoder=False,
+            #     num_mlp=8,
+            #     input_is_latent=True,
+            #     different_w=True,
+            #     narrow=1,
+            #     sft_half=True)
+        # elif arch == 'bilinear':
+        #     self.gfpgan = GFPGANBilinear(
+        #         out_size=512,
+        #         num_style_feat=512,
+        #         channel_multiplier=channel_multiplier,
+        #         decoder_load_path=None,
+        #         fix_decoder=False,
+        #         num_mlp=8,
+        #         input_is_latent=True,
+        #         different_w=True,
+        #         narrow=1,
+        #         sft_half=True)
+        # elif arch == 'original':
+        #     self.gfpgan = GFPGANv1(
+        #         out_size=512,
+        #         num_style_feat=512,
+        #         channel_multiplier=channel_multiplier,
+        #         decoder_load_path=None,
+        #         fix_decoder=True,
+        #         num_mlp=8,
+        #         input_is_latent=True,
+        #         different_w=True,
+        #         narrow=1,
+        #         sft_half=True)
+        # elif arch == 'RestoreFormer':
+        #     from gfpgan.archs.restoreformer_arch import RestoreFormer
+        #     self.gfpgan = RestoreFormer()
         # initialize face helper
         self.face_helper = FaceRestoreHelper(
             upscale,
@@ -90,17 +94,44 @@ class GFPGANer():
             pars_bmodel = pars_bmodel
         )
 
-        if model_path.startswith('https://'):
-            model_path = load_file_from_url(
-                url=model_path, model_dir=os.path.join(ROOT_DIR, 'gfpgan/weights'), progress=True, file_name=None)
-        loadnet = torch.load(model_path)
-        if 'params_ema' in loadnet:
-            keyname = 'params_ema'
-        else:
-            keyname = 'params'
-        self.gfpgan.load_state_dict(loadnet[keyname], strict=True)
-        self.gfpgan.eval()
-        self.gfpgan = self.gfpgan.to(self.device)
+        # if model_path.startswith('https://'):
+        #     model_path = load_file_from_url(
+        #         url=model_path, model_dir=os.path.join(ROOT_DIR, 'gfpgan/weights'), progress=True, file_name=None)
+        # loadnet = torch.load(model_path)
+        # if 'params_ema' in loadnet:
+        #     keyname = 'params_ema'
+        # else:
+        #     keyname = 'params'
+        # self.gfpgan.load_state_dict(loadnet[keyname], strict=True)
+        # self.gfpgan.eval()
+        # self.gfpgan = self.gfpgan.to(self.device)
+
+    def make_fake(self,cropped_face_t):
+        new_emptys = []
+        new_emptys.append(torch.empty(size=(1, 1, 4, 4), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 8, 8), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 8, 8), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 16, 16), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 16, 16), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 32, 32), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 32, 32), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 64, 64), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 64, 64), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 128, 128), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 128, 128), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 256, 256), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 256, 256), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 512, 512), dtype=torch.float32, device='cpu').normal_().numpy())
+        new_emptys.append(torch.empty(size=(1, 1, 512, 512), dtype=torch.float32, device='cpu').normal_().numpy())
+
+        fake_input = [cropped_face_t,] + [new_empty for new_empty in new_emptys]
+        for i in fake_input:
+            print(type(i))
+
+        return fake_input
+
+
+
 
     @torch.no_grad()
     def enhance(self, img, has_aligned=False, only_center_face=False, paste_back=True, weight=0.5, tqdm_tool=None):
@@ -131,8 +162,30 @@ class GFPGANer():
 
             try:
                 time0 = time.time()
-                output = self.gfpgan(cropped_face_t, return_rgb=False, weight=weight)[0]
+                cropped_face_t = cropped_face_t.numpy()
+                ort_inputs = {'input0': cropped_face_t,
+                              'onnx::Mul_1': torch.empty(size=(1, 1, 4, 4), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_2': torch.empty(size=(1, 1, 8, 8), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_3': torch.empty(size=(1, 1, 8, 8), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_4': torch.empty(size=(1, 1, 16, 16), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_5': torch.empty(size=(1, 1, 16, 16), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_6': torch.empty(size=(1, 1, 32, 32), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_7': torch.empty(size=(1, 1, 32, 32), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_8': torch.empty(size=(1, 1, 64, 64), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_9': torch.empty(size=(1, 1, 64, 64), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_10': torch.empty(size=(1, 1, 128, 128), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_11': torch.empty(size=(1, 1, 128, 128), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_12': torch.empty(size=(1, 1, 256, 256), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_13': torch.empty(size=(1, 1, 256, 256), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_14': torch.empty(size=(1, 1, 512, 512), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              'onnx::Mul_15':torch.empty(size=(1, 1, 512, 512), dtype=torch.float32, device='cpu').normal_().numpy(),
+                              }
+                output_names = self.ort_session.get_outputs()
+                output_name = [n.name for n in output_names]
+                # output = self.ort_session.run(output_name, ort_inputs)[0]
+                output = self.gfpgan(self.make_fake(cropped_face_t))[0]
                 print(time.time() - time0)
+                output = torch.from_numpy(output)
 
                 # convert to image
                 restored_face = tensor2img(output.squeeze(0), rgb2bgr=True, min_max=(-1, 1))
